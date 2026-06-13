@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: sportsle_db
+    restart: always
+    environment:
+      POSTGRES_USER: sportsle_user
+      POSTGRES_PASSWORD: sportsle_password
+      POSTGRES_DB: sportsle_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    container_name: sportsle_backend
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - DATABASE_URL=postgresql://sportsle_user:sportsle_password@db:5432/sportsle_dev
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    container_name: sportsle_frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
