@@ -1,8 +1,10 @@
 from flask import Flask, jsonify
+from flask_cors import CORS  # 1. Importa o CORS
 import psycopg2
 import os
 
 app = Flask(__name__)
+CORS(app)  # 2. Libera o acesso para o Frontend de forma segura
 
 @app.route('/api/v1/health', methods=['GET'])
 def health_check():
