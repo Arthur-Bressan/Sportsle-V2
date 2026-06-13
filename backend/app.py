@@ -25,5 +25,31 @@ def health_check():
         "message": "Cano Vazio do Backend funcionando!"
     }), 200
 
+@app.route('/api/v1/athletes', methods=['GET'])
+def get_athletes():
+    try:
+        db_url = os.environ.get('DATABASE_URL')
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor()
+        
+        # Busca os dados do banco
+        cursor.execute("SELECT id, name FROM athletes;")
+        rows = cursor.fetchall()
+        
+        # Transforma os dados em uma lista de dicionários (JSON)
+        athletes = []
+        for row in rows:
+            athletes.append({
+                "id": row[0],
+                "name": row[1]
+            })
+            
+        cursor.close()
+        conn.close()
+        return jsonify(athletes), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
