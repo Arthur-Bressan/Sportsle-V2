@@ -1,125 +1,134 @@
-import os
-from flask import Flask, jsonify, request
+# backend/app.py
+
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
+import os
+from datetime import date
 
 app = Flask(__name__)
-CORS(app) 
+CORS(app)
 
-def get_db_connection():
-    db_url = os.environ.get('DATABASE_URL')
-    return psycopg2.connect(db_url)
 
-# -------------------------------------------------------------
-# 1. ROTA: Listar atletas com ID e Nome
-# -------------------------------------------------------------
-@app.route('/api/v1/athletes', methods=['GET'])
-def get_athletes():
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Buscamos apenas o necessário para preencher o input do autocomplete
-        cursor.execute("SELECT id, name FROM athletes ORDER BY name ASC;")
-        rows = cursor.fetchall()
-        
-        athletes = [{"id": row[0], "name": row[1]} for row in rows]
-        
-        cursor.close()
+def get_db():
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST", "db"),
+        database=os.getenv("DB_NAME", "sportsle"),
+        user=os.getenv("DB_USER", "postgres"),
+        password=os.getenv("DB_PASSWORD", "postgres"),
+    )
+
+
+# ============================================================
+# GET /api/v1/athletes
+# Retorna lista de atletas para o autocomplete
+# ============================================================
+
+@app.get("/api/v1/athletes")
+def list_athletes():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name FROM athletes ORDER BY name")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify([{"id": r[0], "name": r[1]} for r in rows])
+
+
+# ============================================================
+# POST /api/v1/guess
+# Recebe athlete_id, compara com atleta do dia
+# ============================================================
+
+@app.post("/api/v1/guess")
+def make_guess():
+    data = request.get_json()
+    athlete_id = data.get("athlete_id")
+
+    if not athlete_id:
+        return jsonify({"error": "athlete_id é obrigatório"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Busca atleta do dia
+    cur.execute(
+        "SELECT athlete_id FROM daily_games WHERE game_date = %s",
+        (date.today(),)
+    )
+    row = cur.fetchone()
+
+    if not row:
+        cur.close()
         conn.close()
-        return jsonify(athletes), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Nenhum jogo configurado para hoje"}), 404
 
+    secret_athlete_id = row[0]
 
-# -------------------------------------------------------------
-# 2. ROTA: Processar o Palpite do Usuário
-# -------------------------------------------------------------
-@app.route('/api/v1/guess', methods=['POST'])
-def process_guess():
-    try:
-        data = request.get_json()
-        guessed_id = data.get('athlete_id')
-        
-        if not guessed_id:
-            return jsonify({"error": "O campo 'athlete_id' é obrigatório"}), 400
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        # PASSO 1: Descobrir quem é o atleta secreto do dia atual
-        cursor.execute("""
-            SELECT a.id, a.name, a.country, a.sport, a.birth_year, a.is_retired 
-            FROM daily_games dg
-            JOIN athletes a ON dg.athlete_id = a.id
-            WHERE dg.game_date = CURRENT_DATE;
-        """)
-        secret_row = cursor.fetchone()
-
-        if not secret_row:
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Nenhum atleta configurado para o dia de hoje."}), 404
-
-        # Mapeando o Atleta Secreto
-        secret = {
-            "id": secret_row[0], "name": secret_row[1], "country": secret_row[2],
-            "sport": secret_row[3], "birth_year": secret_row[4], "is_retired": secret_row[5]
-        }
-
-        # PASSO 2: Buscar os dados do atleta que o usuário chutou
-        cursor.execute("""
-            SELECT id, name, country, sport, birth_year, is_retired 
-            FROM athletes 
-            WHERE id = %s;
-        """, (guessed_id,))
-        guess_row = cursor.fetchone()
-
-        if not guess_row:
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Atleta chutado não encontrado no banco de dados."}), 404
-
-        # Mapeando o Chute do Usuário
-        guess = {
-            "id": guess_row[0], "name": guess_row[1], "country": guess_row[2],
-            "sport": guess_row[3], "birth_year": guess_row[4], "is_retired": guess_row[5]
-        }
-
-        cursor.close()
+    # Se acertou direto, nem precisa comparar atributo
+    if athlete_id == secret_athlete_id:
+        cur.execute(
+            "SELECT name, country, sport, birth_year, is_retired "
+            "FROM athletes WHERE id = %s",
+            (athlete_id,)
+        )
+        a = cur.fetchone()
+        cur.close()
         conn.close()
-
-        # PASSO 3: Comparação de Atributos
-        is_correct = (secret["id"] == guess["id"])
-        
-        comparison = {
-            "country": (secret["country"] == guess["country"]),
-            "sport": (secret["sport"] == guess["sport"]),
-            "is_retired": (secret["is_retired"] == guess["is_retired"]),
-            # Para o ano, podemos retornar "equal", "higher" ou "lower" para ajudar o usuário com setas!
-            "birth_year": "equal" if secret["birth_year"] == guess["birth_year"] 
-                           else "higher" if secret["birth_year"] > guess["birth_year"] 
-                           else "lower"
-        }
-
-        # PASSO 4: Montar a resposta perfeita para o React renderizar
-        response = {
-            "correct": is_correct,
+        return jsonify({
+            "correct": True,
             "guess": {
-                "id": guess["id"],
-                "name": guess["name"],
-                "country": guess["country"],
-                "sport": guess["sport"],
-                "birth_year": guess["birth_year"],
-                "is_retired": guess["is_retired"]
+                "name": a[0],
+                "country": a[1],
+                "sport": a[2],
+                "birth_year": a[3],
+                "is_retired": a[4],
             },
-            "comparison": comparison
-        }
+            "comparison": {
+                "country": True,
+                "sport": True,
+                "birth_year": True,
+                "is_retired": True,
+            },
+        })
 
-        return jsonify(response), 200
+    # Busca dados do palpite e do secreto
+    cur.execute(
+        "SELECT name, country, sport, birth_year, is_retired "
+        "FROM athletes WHERE id = %s",
+        (athlete_id,)
+    )
+    guess = cur.fetchone()
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    cur.execute(
+        "SELECT name, country, sport, birth_year, is_retired "
+        "FROM athletes WHERE id = %s",
+        (secret_athlete_id,)
+    )
+    secret = cur.fetchone()
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    cur.close()
+    conn.close()
+
+    comparison = {
+        "country": guess[1] == secret[1],
+        "sport": guess[2] == secret[2],
+        "birth_year": guess[3] == secret[3],
+        "is_retired": guess[4] == secret[4],
+    }
+
+    return jsonify({
+        "correct": False,
+        "guess": {
+            "name": guess[0],
+            "country": guess[1],
+            "sport": guess[2],
+            "birth_year": guess[3],
+            "is_retired": guess[4],
+        },
+        "comparison": comparison,
+    })
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
